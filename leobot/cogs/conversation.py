@@ -3,6 +3,7 @@ import openai
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
+import asyncio
 
 load_dotenv()
 GPT_API_KEY = os.getenv('GPT4O_API_KEY')
