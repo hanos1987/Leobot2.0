@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
-from utility.config_utils import bot_settings, save_bot_settings
+from .utility.config_utils import bot_settings, save_bot_settings
 
 BOT_OWNER_ID = 1131932116242939975
 
