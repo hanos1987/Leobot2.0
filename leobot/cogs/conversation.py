@@ -64,7 +64,7 @@ class Conversation(commands.Cog):
         self.last_message_time[key] = datetime.utcnow()
         try:
             response = openai.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-3.5-turbo",
                 messages=self.conversation_states[key][-10:],  # Limit context
                 max_tokens=100  # Keep responses concise
             )
