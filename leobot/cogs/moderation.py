@@ -1,23 +1,13 @@
 import discord
 from discord.ext import commands
 import aiohttp
-import json
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 GROK3_API_KEY = os.getenv('GROK3_API_KEY')
 
-def load_json(file):
-    try:
-        with open(file, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_json(file, data):
-    with open(file, 'w') as f:
-        json.dump(data, f, indent=4)
+from ..utility.utility_functions import load_json, save_json
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
@@ -30,7 +20,7 @@ class Moderation(commands.Cog):
             return
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.xai.com/grok3",  # Hypothetical endpoint
+                "[invalid url, do not cite]",  # Hypothetical endpoint
                 headers={"Authorization": f"Bearer {GROK3_API_KEY}"},
                 json={
                     "model": "grok3",
