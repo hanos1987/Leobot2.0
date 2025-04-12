@@ -1,0 +1,1012 @@
+===== leobot/__init__.py =====
+# Empty file to make leobot a package
+
+===== leobot/main.py =====
+import discord
+from discord.ext import commands
+import os
+from dotenv import load_dotenv
+from utility.config_utils import bot_settings, save_bot_settings
+
+# Load environment variables
+load_dotenv()
+DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+
+# Bot setup
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+BOT_OWNER_ID = 1131932116242939975
+
+# Load cogs
+async def load_cogs():
+    for filename in os.listdir('leobot/cogs'):
+        if filename.endswith('.py') and filename != '__init__.py':
+            await bot.load_extension(f'leobot.cogs.{filename[:-3]}')
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+    await bot.change_presence(activity=discord.Game(name="with Sleep Tokens!"))
+    guild = bot.guilds[0]  # Assumes bot is in one guild
+    color_roles = bot_settings.get('colorRoles', {})
+    for color_name, color_hex in color_roles.items():
+        role = discord.utils.get(guild.roles, name=color_name)
+        if not role:
+            await guild.create_role(name=color_name, color=discord.Color.from_str(color_hex))
+
+# Start bot
+async def main():
+    await load_cogs()
+    await bot.start(DISCORD_TOKEN)
+
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(main())
+
+===== leobot/cogs/__init__.py =====
+# Empty file to make cogs a package
+
+===== leobot/cogs/conversation.py =====
+from discord.ext import commands
+import openai
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+GPT_API_KEY = os.getenv('GPT4O_API_KEY')
+
+class Conversation(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.conversation_states = {}  # (user_id, channel_id): [messages]
+        self.last_message_time = {}  # (user_id, channel_id): datetime
+        openai.api_key = GPT_API_KEY
+
+    async def check_timeout(self):
+        while True:
+            current_time = datetime.utcnow()
+            for key in list(self.conversation_states.keys()):
+                if key in self.last_message_time:
+                    if current_time - self.last_message_time[key] > timedelta(minutes=5):
+                        user_id, channel_id = key
+                        channel = self.bot.get_channel(channel_id)
+                        if channel:
+                            await channel.send(f"<@{user_id}>, conversation ended due to inactivity.")
+                        del self.conversation_states[key]
+                        del self.last_message_time[key]
+            await asyncio.sleep(60)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.loop.create_task(self.check_timeout())
+
+    @commands.command()
+    async def conversation(self, ctx):
+        key = (ctx.author.id, ctx.channel.id)
+        if key in self.conversation_states:
+            await ctx.send("You're already in a conversation in this channel!")
+            return
+        self.conversation_states[key] = []
+        self.last_message_time[key] = datetime.utcnow()
+        await ctx.send(f"{ctx.author.mention}, conversation started! Type your messages, and I'll respond.")
+
+    @commands.command()
+    async def end_conversation(self, ctx):
+        key = (ctx.author.id, ctx.channel.id)
+        if key not in self.conversation_states:
+            await ctx.send("No active conversation in this channel.")
+            return
+        del self.conversation_states[key]
+        del self.last_message_time[key]
+        await ctx.send("Conversation ended.")
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        key = (message.author.id, message.channel.id)
+        if key not in self.conversation_states:
+            return
+        self.conversation_states[key].append({"role": "user", "content": message.content})
+        self.last_message_time[key] = datetime.utcnow()
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4o",
+                messages=self.conversation_states[key][-10:],  # Limit context
+                max_tokens=100  # Keep responses concise
+            )
+            reply = response.choices[0].message.content
+            self.conversation_states[key].append({"role": "assistant", "content": reply})
+            await message.channel.send(f"{message.author.mention} {reply}")
+        except Exception as e:
+            await message.channel.send("Sorry, I had an issue responding. Try again!")
+            print(f"GPT error: {e}")
+        await self.bot.process_commands(message)
+
+async def setup(bot):
+    await bot.add_cog(Conversation(bot))
+
+===== leobot/cogs/playercard.py =====
+import discord
+from discord.ext import commands
+import asyncio
+from utility.config_utils import bot_settings
+import json
+
+def load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=4)
+
+class PlayerCard(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command()
+    async def changecolor(self, ctx):
+        color_roles = bot_settings.get('colorRoles', {})
+        colors_list = list(color_roles.keys())
+        color_options = "\n".join(f"{i+1}. {name}" for i, name in enumerate(colors_list))
+        await ctx.send(f"Choose a color:\n{color_options}\nOr type the color name (case-insensitive):")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            user_input = msg.content.strip().lower()
+            
+            try:
+                selection = int(user_input) - 1
+                if 0 <= selection < len(colors_list):
+                    selected_color = colors_list[selection]
+                else:
+                    raise ValueError("Invalid selection number.")
+            except ValueError:
+                selected_color = next((name for name in colors_list if name.lower() == user_input), None)
+                if selected_color is None:
+                    raise ValueError("Invalid color name.")
+            
+            selected_hex = color_roles[selected_color]
+            color_role = discord.utils.get(ctx.guild.roles, name=selected_color)
+            if not color_role:
+                color_role = await ctx.guild.create_role(name=selected_color, color=discord.Color.from_str(selected_hex))
+            
+            current_color_roles = [role for role in ctx.author.roles if role.name in colors_list]
+            for role in current_color_roles:
+                await ctx.author.remove_roles(role)
+            
+            per_user_role_name = str(ctx.author.id)
+            per_user_role = discord.utils.get(ctx.guild.roles, name=per_user_role_name)
+            if per_user_role:
+                await ctx.author.remove_roles(per_user_role)
+            
+            await ctx.author.add_roles(color_role)
+            
+            config = load_json('data/config.json')
+            config[str(ctx.author.id)] = {"color": selected_hex, "playercard": config.get(str(ctx.author.id), {}).get("playercard", None)}
+            save_json('data/config.json', config)
+            
+            await ctx.send(f"Color updated to {selected_color}! Hex code: {selected_hex}")
+        
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Color unchanged.")
+
+    @commands.command()
+    async def playercard(self, ctx):
+        playercard_channel = bot_settings.get('channelIds', {}).get('playerCardChannel')
+        if playercard_channel and ctx.channel.id != playercard_channel:
+            await ctx.send("This command only works in the player card channel!")
+            return
+        questions = [
+            "Pronouns?", "Zodiac?", "Languages?", "Time Zone?", "Country?", "Occupation?",
+            "Favorite Band Member?", "Discover Sleep Token?", "YouTube?", "Fun Facts?",
+            "Hobbies?", "Favorite Food?", "Favorite Games?", "Favorite Show?", "Discord Open?"
+        ]
+        answers = {}
+        for q in questions:
+            await ctx.author.send(q)
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.author.dm_channel
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=300)
+                answers[q] = msg.content
+            except asyncio.TimeoutError:
+                await ctx.author.send("Timed out. Player card creation cancelled.")
+                return
+        card = (
+            f"**{ctx.author.display_name}'s Player Card**\n\n"
+            f"**Pronouns**\n{answers['Pronouns?']}\n"
+            f"**Zodiac**\n{answers['Zodiac?']}\n"
+            f"**Languages**\n{answers['Languages?']}\n"
+            f"**Time Zone**\n{answers['Time Zone?']}\n"
+            f"**Country**\n{answers['Country?']}\n"
+            f"**Occupation**\n{answers['Occupation?']}\n"
+            f"**Favorite Band Member**\n{answers['Favorite Band Member?']}\n"
+            f"**Discover Sleep Token**\n{answers['Discover Sleep Token?']}\n"
+            f"**YouTube**\n{answers['YouTube?']}\n"
+            f"**Fun Facts**\n{answers['Fun Facts?']}\n"
+            f"**Hobbies**\n{answers['Hobbies?']}\n"
+            f"**Favorite Food**\n{answers['Favorite Food?']}\n"
+            f"**Favorite Games**\n{answers['Favorite Games?']}\n"
+            f"**Favorite Show**\n{answers['Favorite Show?']}\n"
+            f"**Discord Open?**\n{answers['Discord Open?']}\n\n"
+            f"Player card created by {ctx.author.mention}"
+        )
+        config = load_json('data/config.json')
+        config[str(ctx.author.id)] = {"color": config.get(str(ctx.author.id), {}).get("color", "#FFFFFF"), "playercard": card}
+        save_json('data/config.json', config)
+        if playercard_channel:
+            channel = self.bot.get_channel(playercard_channel)
+            await channel.send(card)
+        else:
+            await ctx.send(card)
+
+async def setup(bot):
+    await bot.add_cog(PlayerCard(bot))
+
+===== leobot/cogs/tokens.py =====
+import discord
+from discord.ext import commands
+import json
+from utility.config_utils import bot_settings
+from utility.permission_utils import is_mod
+
+def load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=4)
+
+class TokenManager(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.tokens = load_json('data/tokens.json')
+
+    @commands.command()
+    async def givetokens(self, ctx, member: discord.Member, amount: int):
+        if not is_mod(ctx.author):
+            await ctx.send("Only mods can use this command.")
+            return
+        user_id = str(member.id)
+        self.tokens[user_id] = self.tokens.get(user_id, 0) + amount
+        save_json('data/tokens.json', self.tokens)
+        await ctx.send(f"Gave {amount} sleep tokens to {member.mention}. They now have {self.tokens[user_id]} tokens.")
+
+    @commands.command()
+    async def tokens(self, ctx):
+        user_id = str(ctx.author.id)
+        amount = self.tokens.get(user_id, 0)
+        await ctx.send(f"You have {amount} sleep tokens.")
+
+    def add_tokens(self, user_id, amount):
+        self.tokens[str(user_id)] = self.tokens.get(str(user_id), 0) + amount
+        save_json('data/tokens.json', self.tokens)
+
+async def setup(bot):
+    await bot.add_cog(TokenManager(bot))
+
+===== leobot/cogs/moderation.py =====
+import discord
+from discord.ext import commands
+import aiohttp
+import json
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+GROK3_API_KEY = os.getenv('GROK3_API_KEY')
+
+def load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=4)
+
+class Moderation(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.violations = load_json('data/violations.json')
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.xai.com/grok3",  # Hypothetical endpoint
+                headers={"Authorization": f"Bearer {GROK3_API_KEY}"},
+                json={
+                    "model": "grok3",
+                    "messages": [{
+                        "role": "user",
+                        "content": f"Analyze this message for harassment, sexual content, or argumentative behavior. Do not consider autism or related terms as ableist. Respond with 'inappropriate' if any issues are found, otherwise 'appropriate': {message.content}"
+                    }]
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get('choices', [{}])[0].get('message', {}).get('content', '').lower() == 'inappropriate':
+                        user_id = str(message.author.id)
+                        self.violations[user_id] = self.violations.get(user_id, 0) + 1
+                        save_json('data/violations.json', self.violations)
+                        await message.channel.send(f"{message.author.mention}, your message was flagged for inappropriate behavior. Violation count: {self.violations[user_id]}")
+        await self.bot.process_commands(message)
+
+async def setup(bot):
+    await bot.add_cog(Moderation(bot))
+
+===== leobot/cogs/trivia.py =====
+import discord
+from discord.ext import commands
+import asyncio
+import json
+import os
+import random
+import aiohttp
+from html import unescape
+
+class Trivia(commands.Cog):
+    TRIVIA_CHANNEL_ID = None
+    TIMER_DURATION = 25  # Seconds per question
+    LEADERBOARD_FILE = "data/trivia_leaderboard.json"
+    ROUNDS_FILE = "data/trivia_rounds.json"
+    CATEGORY_POOL = [
+        "General Knowledge", "Science", "History", "Geography", "Sports",
+        "Entertainment", "Literature", "Technology", "Art", "Mathematics"
+    ]
+    CATEGORY_MAP = {
+        "General Knowledge": 9,
+        "Entertainment": 11,
+        "Science": 17,
+        "History": 23,
+        "Geography": 22,
+        "Sports": 21,
+        "Literature": 10,
+        "Technology": 18,
+        "Art": 25,
+        "Mathematics": 19
+    }
+    DIFFICULTY_MAP = {
+        "Easy": "easy",
+        "Medium": "medium",
+        "Hard": "hard"
+    }
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.is_trivia_active = False
+        self.current_question_index = 0
+        self.current_question_message = None
+        self.timer_task = None
+        self.selected_category = None
+        self.selected_difficulty = None
+        self.question_count = 10
+        self.current_questions = []
+        self.game_scores = {}
+        self.current_guesses = {}
+        self.all_time_leaderboard = self.load_leaderboard()
+        self.rounds = self.load_rounds()
+        self.session_token = None
+        asyncio.create_task(self.fetch_session_token())
+
+    def load_leaderboard(self):
+        try:
+            with open(self.LEADERBOARD_FILE, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            return {}
+
+    def save_leaderboard(self):
+        os.makedirs("data", exist_ok=True)
+        with open(self.LEADERBOARD_FILE, "w") as f:
+            json.dump(self.all_time_leaderboard, f, indent=4)
+
+    def load_rounds(self):
+        try:
+            with open(self.ROUNDS_FILE, "r") as f:
+                return json.load(f).get("rounds", 0)
+        except FileNotFoundError:
+            return 0
+        except json.JSONDecodeError:
+            return 0
+
+    def save_rounds(self):
+        os.makedirs("data", exist_ok=True)
+        with open(self.ROUNDS_FILE, "w") as f:
+            json.dump({"rounds": self.rounds}, f, indent=4)
+
+    async def fetch_session_token(self):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://opentdb.com/api_token.php?command=request", timeout=5) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+                    if data["response_code"] == 0:
+                        self.session_token = data["token"]
+                        return self.session_token
+                    return None
+        except aiohttp.ClientError:
+            return None
+
+    async def fetch_questions(self, category, difficulty):
+        category_id = self.CATEGORY_MAP.get(category)
+        difficulty_level = self.DIFFICULTY_MAP.get(difficulty)
+        if not category_id or not difficulty_level:
+            return []
+        url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple"
+        if self.session_token:
+            url += f"&token={self.session_token}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=5) as resp:
+                    if resp.status != 200:
+                        return []
+                    data = await resp.json()
+                    if data["response_code"] != 0:
+                        if data["response_code"] in [3, 4]:
+                            self.session_token = await self.fetch_session_token()
+                            url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple&token={self.session_token}"
+                            async with session.get(url, timeout=5) as resp2:
+                                if resp2.status != 200:
+                                    return []
+                                data = await resp2.json()
+                                if data["response_code"] != 0:
+                                    return []
+                        else:
+                            return []
+                    questions = []
+                    for q in data["results"]:
+                        question_text = unescape(q["question"])
+                        correct_answer = unescape(q["correct_answer"])
+                        incorrect_answers = [unescape(ans) for ans in q["incorrect_answers"]]
+                        options = incorrect_answers + [correct_answer]
+                        random.shuffle(options)
+                        answer_idx = options.index(correct_answer)
+                        questions.append({
+                            "category": category,
+                            "difficulty": difficulty,
+                            "question": question_text,
+                            "options": options,
+                            "answer": answer_idx
+                        })
+                    return questions
+        except aiohttp.ClientError:
+            return []
+
+    async def check_trivia_channel(self, ctx):
+        from utility.config_utils import bot_settings
+        trivia_channel = bot_settings.get('channelIds', {}).get('triviaChannel')
+        if trivia_channel and ctx.channel.id != trivia_channel:
+            await ctx.send(f"Trivia commands are only allowed in <#{trivia_channel}>!")
+            return False
+        return True
+
+    async def run_poll(self, ctx, message_content, options):
+        poll_message = await ctx.send(
+            f"{message_content}\n"
+            f"🇦: {options[0]}\n"
+            f"🇧: {options[1]}\n"
+            f"🇨: {options[2]}\n"
+            "Poll closes in 10 seconds!"
+        )
+        for emoji in ['🇦', '🇧', '🇨']:
+            await poll_message.add_reaction(emoji)
+        await asyncio.sleep(10)
+        poll_message = await ctx.channel.fetch_message(poll_message.id)
+        reaction_counts = {emoji: 0 for emoji in ['🇦', '🇧', '🇨']}
+        for reaction in poll_message.reactions:
+            if reaction.emoji in reaction_counts:
+                reaction_counts[reaction.emoji] = reaction.count - 1
+        max_votes = max(reaction_counts.values())
+        if max_votes == 0:
+            await ctx.send(f"No votes received, defaulting to: **{options[0]}**")
+            return options[0]
+        tied_emojis = [emoji for emoji, count in reaction_counts.items() if count == max_votes]
+        winning_emoji = random.choice(tied_emojis)
+        return options[{'🇦': 0, '🇧': 1, '🇨': 2}[winning_emoji]]
+
+    @commands.command()
+    async def trivia(self, ctx):
+        from utility.permission_utils import is_mod
+        if not await self.check_trivia_channel(ctx) or not is_mod(ctx.author):
+            return
+        if self.is_trivia_active:
+            await ctx.send("A trivia game is already in progress!")
+            return
+        categories = random.sample(self.CATEGORY_POOL, 3)
+        self.selected_category = await self.run_poll(
+            ctx, "Choose a category:", categories
+        )
+        await ctx.send(f"Selected category: **{self.selected_category}**")
+        difficulties = ["Easy", "Medium", "Hard"]
+        self.selected_difficulty = await self.run_poll(
+            ctx, "Choose the difficulty:", difficulties
+        )
+        await ctx.send(f"Selected difficulty: **{self.selected_difficulty}**")
+        self.is_trivia_active = True
+        questions = await self.fetch_questions(self.selected_category, self.selected_difficulty)
+        if questions:
+            self.current_questions = questions[:10]
+            self.current_question_index = 0
+            await self.send_question(ctx.channel)
+        else:
+            self.is_trivia_active = False
+            await ctx.send("Unable to fetch questions. Try again later.")
+
+    async def send_question(self, channel):
+        if self.current_question_index >= len(self.current_questions):
+            await self.end_game(channel)
+            return
+        question_data = self.current_questions[self.current_question_index]
+        answer_text = "\n".join([f"{chr(65 + i)}: {opt}" for i, opt in enumerate(question_data["options"])])
+        self.current_question_message = await channel.send(
+            f"Question {self.current_question_index + 1}/{len(self.current_questions)}: {question_data['question']}\n\n{answer_text}\n\n"
+            f"React with 🇦, 🇧, 🇨, or 🇩! Time: {self.TIMER_DURATION} seconds."
+        )
+        for emoji in ['🇦', '🇧', '🇨', '🇩']:
+            await self.current_question_message.add_reaction(emoji)
+        self.current_guesses[self.current_question_index] = {}
+        self.timer_task = asyncio.create_task(self.timer(channel, question_data))
+
+    async def timer(self, channel, question_data):
+        await asyncio.sleep(self.TIMER_DURATION)
+        guesses = self.current_guesses.get(self.current_question_index, {})
+        correct_answer = question_data["options"][question_data["answer"]]
+        correct_letter = chr(65 + question_data["answer"])
+        correct_users = []
+        for user_id, guess in guesses.items():
+            if guess == correct_letter:
+                self.game_scores[user_id] = self.game_scores.get(user_id, 0) + 1
+                user = self.bot.get_user(user_id)
+                if user:
+                    correct_users.append(user.mention)
+        result = f"Time’s up! Correct answer: {correct_answer} (Option {correct_letter})\n"
+        if correct_users:
+            result += f"Correct: {', '.join(correct_users)}"
+        else:
+            result += "No one got it right!"
+        await channel.send(result)
+        self.current_question_index += 1
+        await self.send_question(channel)
+
+    async def end_game(self, channel):
+        self.rounds += 1
+        self.save_rounds()
+        game_leaderboard = sorted(self.game_scores.items(), key=lambda x: x[1], reverse=True)
+        game_text = "Game Leaderboard:\n" + "\n".join(
+            [f"{self.bot.get_user(user_id).mention}: {score}" for user_id, score in game_leaderboard]
+        ) if game_leaderboard else "No scores this game."
+        for user_id, score in self.game_scores.items():
+            self.all_time_leaderboard[str(user_id)] = self.all_time_leaderboard.get(str(user_id), 0) + score
+        self.save_leaderboard()
+        all_time_leaderboard = sorted(self.all_time_leaderboard.items(), key=lambda x: x[1], reverse=True)[:5]
+        all_time_text = "All-Time Leaderboard (Top 5):\n" + "\n".join(
+            [f"{self.bot.get_user(int(user_id)).mention}: {score}" for user_id, score in all_time_leaderboard]
+        ) if all_time_leaderboard else "No scores yet."
+        token_cog = self.bot.get_cog("TokenManager")
+        token_text = ""
+        if token_cog:
+            for user_id, score in self.game_scores.items():
+                if score > 0:
+                    token_cog.add_tokens(user_id, score)
+                    user = self.bot.get_user(user_id)
+                    if user:
+                        token_text += f"Awarded {score} Sleep Token{'s' if score > 1 else ''} to {user.mention}!\n"
+        await channel.send(f"Trivia ended!\n\n{game_text}\n\n{all_time_text}" + (f"\n\n{token_text}" if token_text else ""))
+        self.is_trivia_active = False
+        self.game_scores = {}
+        self.current_guesses = {}
+        self.selected_category = None
+        self.selected_difficulty = None
+        self.current_question_message = None
+        self.current_questions = []
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user == self.bot.user or not self.is_trivia_active or reaction.message != self.current_question_message:
+            return
+        if reaction.emoji not in ['🇦', '🇧', '🇨', '🇩']:
+            return
+        letter = {'🇦': 'A', '🇧': 'B', '🇨': 'C', '🇩': 'D'}[reaction.emoji]
+        self.current_guesses[self.current_question_index][user.id] = letter
+        await reaction.remove(user)
+
+async def setup(bot):
+    await bot.add_cog(Trivia(bot))
+
+===== leobot/cogs/time_display.py =====
+from discord.ext import commands
+from datetime import datetime
+import pytz
+
+class TimeDisplay(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.cities = [
+            ("Chicago", "America/Chicago"),
+            ("New York City", "America/New_York"),
+            ("London", "Europe/London"),
+            ("Belgium", "Europe/Brussels"),
+            ("Moscow", "Europe/Moscow"),
+            ("Sydney", "Australia/Sydney"),
+            ("Hong Kong", "Asia/Hong_Kong"),
+            ("Hawaii", "Pacific/Honolulu"),
+            ("Guam", "Pacific/Guam")
+        ]
+
+    @commands.command()
+    async def time(self, ctx):
+        time_str = "Current times:\n"
+        for city, tz_str in self.cities:
+            tz = pytz.timezone(tz_str)
+            current_time = datetime.now(tz).strftime("%H:%M:%S %Z")
+            time_str += f"- {city}: {current_time}\n"
+        await ctx.send(time_str)
+
+async def setup(bot):
+    await bot.add_cog(TimeDisplay(bot))
+
+===== leobot/cogs/setup.py =====
+import discord
+from discord.ext import commands
+import asyncio
+from utility.config_utils import bot_settings, save_bot_settings
+
+BOT_OWNER_ID = 1131932116242939975
+
+class Setup(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command()
+    async def setupleobot(self, ctx):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        current_playercard = bot_settings.get("channelIds", {}).get("playerCardChannel", "None")
+        await ctx.send(f"Enter the channel ID for player card creation (current: {current_playercard}):")
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            playercard_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            playercard_channel = current_playercard if current_playercard != "None" else None
+        current_trivia = bot_settings.get("channelIds", {}).get("triviaChannel", "None")
+        await ctx.send(f"Enter the channel ID for trivia commands (current: {current_trivia}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            trivia_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            trivia_channel = current_trivia if current_trivia != "None" else None
+        current_mod = bot_settings.get("channelIds", {}).get("modChannel", "None")
+        await ctx.send(f"Enter the channel ID for mod-only commands (current: {current_mod}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            mod_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            mod_channel = current_mod if current_mod != "None" else None
+        current_admins = bot_settings.get("admins", [BOT_OWNER_ID])
+        await ctx.send(f"Enter admin IDs (comma-separated) (current: {', '.join(map(str, current_admins))}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            admin_ids_input = msg.content.strip()
+            if admin_ids_input:
+                admin_ids = [int(id.strip()) for id in admin_ids_input.split(',') if id.strip()]
+                if BOT_OWNER_ID not in admin_ids:
+                    admin_ids.append(BOT_OWNER_ID)
+            else:
+                admin_ids = current_admins
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            admin_ids = current_admins
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["playerCardChannel"] = playercard_channel
+        bot_settings["channelIds"]["triviaChannel"] = trivia_channel
+        bot_settings["channelIds"]["modChannel"] = mod_channel
+        bot_settings["admins"] = admin_ids
+        save_bot_settings(bot_settings)
+        await ctx.send("Setup complete!")
+
+    @commands.command()
+    async def setadmin(self, ctx, admin_ids: str):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        admin_ids_list = [int(id.strip()) for id in admin_ids.split(',') if id.strip()]
+        if BOT_OWNER_ID not in admin_ids_list:
+            admin_ids_list.append(BOT_OWNER_ID)
+        bot_settings["admins"] = admin_ids_list
+        save_bot_settings(bot_settings)
+        await ctx.send("Admins updated successfully.")
+
+    @commands.command()
+    async def setplayercardchannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["playerCardChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Player card channel updated successfully.")
+
+    @commands.command()
+    async def settriviachannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["triviaChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Trivia channel updated successfully.")
+
+    @commands.command()
+    async def setmodchannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["modChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Mod-only channel updated successfully.")
+
+async def setup(bot):
+    await bot.add_cog(Setup(bot))
+
+===== leobot/cogs/modcommands.py =====
+from discord.ext import commands
+from utility.config_utils import bot_settings
+from utility.permission_utils import is_mod
+
+class ModCommands(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command()
+    async def modcommands(self, ctx):
+        if not is_mod(ctx.author):
+            await ctx.send("You don't have permission to use this command.")
+            return
+        mod_channel = bot_settings.get('channelIds', {}).get('modChannel')
+        if mod_channel and ctx.channel.id != mod_channel:
+            await ctx.send("This command can only be used in the mod-only channel.")
+            return
+        mod_commands = [
+            ("givetokens", "Give sleep tokens to members"),
+            ("trivia", "Start a trivia game")
+        ]
+        message = "Mod Commands:\n" + "\n".join(f"- {cmd}: {desc}" for cmd, desc in mod_commands)
+        await ctx.send(message)
+
+async def setup(bot):
+    await bot.add_cog(ModCommands(bot))
+
+===== leobot/cogs/summary.py =====
+import discord
+from discord.ext import commands
+import aiohttp
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+GROK3_API_KEY = os.getenv('GROK3_API_KEY')
+
+class Summary(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command()
+    async def summary(self, ctx, minutes: int):
+        if minutes <= 0:
+            await ctx.send("Please specify a positive number of minutes.")
+            return
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(minutes=minutes)
+        messages = []
+        async for msg in ctx.channel.history(limit=100, after=start_time):
+            if not msg.author.bot:
+                messages.append(msg.content)
+        if not messages:
+            await ctx.send("No messages found in the specified time frame.")
+            return
+        prompt = "Summarize the following conversation briefly, focusing on hot topics discussed. Do not list user names:\n" + "\n".join(messages)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.xai.com/grok3",  # Hypothetical endpoint
+                headers={"Authorization": f"Bearer {GROK3_API_KEY}"},
+                json={
+                    "model": "grok3",
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    summary = data.get('choices', [{}])[0].get('message', {}).get('content', 'No summary available.')
+                    await ctx.send(f"Summary of the last {minutes} minutes:\n{summary}")
+                else:
+                    await ctx.send("Failed to generate summary. Try again later.")
+
+async def setup(bot):
+    await bot.add_cog(Summary(bot))
+
+===== leobot/utility/__init__.py =====
+# Empty file to make utility a package
+
+===== leobot/utility/config_utils.py =====
+import json
+
+def load_bot_settings():
+    try:
+        with open('data/bot_settings.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {
+            "colorRoles": {
+                "Red": "#FF0000",
+                "Green": "#00FF00",
+                "Blue": "#0000FF",
+                "Yellow": "#FFFF00",
+                "Purple": "#800080",
+                "Cyan": "#00FFFF",
+                "Orange": "#FF6600",
+                "Pink": "#FFC0CB",
+                "Brown": "#A52A2A",
+                "Gray": "#808080",
+                "Navy": "#000080",
+                "Teal": "#008080",
+                "Violet": "#EE82EE",
+                "Salmon": "#FA8072",
+                "Gold": "#FFD700",
+                "Silver": "#C0C0C0",
+                "Turquoise": "#40E0D0",
+                "Magenta": "#FF00FF",
+                "The Archive": "#9bdeed",
+                "Lime": "#00FF00"
+            }
+        }
+
+def save_bot_settings(data):
+    os.makedirs('data', exist_ok=True)
+    with open('data/bot_settings.json', 'w') as f:
+        json.dump(data, f, indent=4)
+
+bot_settings = load_bot_settings()
+
+===== leobot/utility/permission_utils.py =====
+from utility.config_utils import bot_settings
+
+def is_mod(user):
+    admins = bot_settings.get("admins", [])
+    return str(user.id) in admins
+
+===== leobot/utility/utility_functions.py =====
+import json
+
+def load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=4)
+
+===== leobot/data/config.example.json =====
+{
+    "members": {},
+    "channelIds": {
+        "playerCardChannel": null,
+        "triviaChannel": null,
+        "modChannel": null
+    }
+}
+
+===== leobot/data/bot_settings.example.json =====
+{
+    "admins": [1131932116242939975],
+    "channelIds": {
+        "playerCardChannel": null,
+        "triviaChannel": null,
+        "modChannel": null
+    },
+    "colorRoles": {
+        "Red": "#FF0000",
+        "Green": "#00FF00",
+        "Blue": "#0000FF",
+        "Yellow": "#FFFF00",
+        "Purple": "#800080",
+        "Cyan": "#00FFFF",
+        "Orange": "#FF6600",
+        "Pink": "#FFC0CB",
+        "Brown": "#A52A2A",
+        "Gray": "#808080",
+        "Navy": "#000080",
+        "Teal": "#008080",
+        "Violet": "#EE82EE",
+        "Salmon": "#FA8072",
+        "Gold": "#FFD700",
+        "Silver": "#C0C0C0",
+        "Turquoise": "#40E0D0",
+        "Magenta": "#FF00FF",
+        "The Archive": "#9bdeed",
+        "Lime": "#00FF00"
+    }
+}
+
+===== requirements.txt =====
+discord.py
+python-dotenv
+aiohttp
+pytz
+openai
+
+===== README.md =====
+# Leobot2.0
+A Discord bot for managing conversations, player cards, tokens, trivia, and more.
+
+## Setup
+1. Clone this repository.
+2. Install dependencies: `pip install -r requirements.txt`
+3. Create a `.env` file based on `.env.example` with your API keys.
+4. Create `bot_settings.json` and `config.json` in `data/` based on their example files.
+5. Run `python -m leobot.main` to start the bot.
+
+## Commands
+- `!time`: Display current times in various cities.
+- `!trivia`: Start a trivia game with Open TDB questions.
+- `!changecolor`: Select from 20 predefined color roles.
+- `!playercard`: Create a player card with personal details.
+- `!conversation`: Start a conversation with the bot (GPT-powered).
+- `!end_conversation`: End your conversation with the bot.
+- `!givetokens`: (Mod) Give sleep tokens to members.
+- `!tokens`: Check your sleep token balance.
+- `!modcommands`: (Mod) List moderator commands.
+- `!summary`: Summarize recent channel conversations (Grok3-powered).
+- `!setupleobot`: (Owner) Configure bot settings.
+- `!setadmin`, `!setplayercardchannel`, `!settriviachannel`, `!setmodchannel`: (Owner) Adjust specific settings.
+
+===== .env.example =====
+DISCORD_TOKEN=
+GPT4O_API_KEY=
+GROK3_API_KEY=
+
+===== .gitIgnore =====
+.env
+data/config.json
+data/tokens.json
+data/violations.json
+data/bot_settings.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
