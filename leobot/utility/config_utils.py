@@ -1,4 +1,5 @@
 import json
+import os
 
 def load_bot_settings():
     try:
