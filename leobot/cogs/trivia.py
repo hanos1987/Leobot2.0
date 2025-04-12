@@ -6,6 +6,7 @@ import random
 import aiohttp
 from html import unescape
 from ..utility.utility_functions import load_json, save_json
+import asyncio
 
 class Trivia(commands.Cog):
     TRIVIA_CHANNEL_ID = None
