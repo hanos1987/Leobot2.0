@@ -74,7 +74,7 @@ class Conversation(commands.Cog):
         try:
             # Step 1: Use Grok 3 for chat completion with web search capability
             search_response = xai_client.chat.completions.create(
-                model="grok-3 latest",
+                model="grok-3-beta",  # Updated to match available model
                 messages=[
                     {"role": "system", "content": "You are a test assistant."},
                     {"role": "user", "content": message.content}
@@ -93,7 +93,7 @@ class Conversation(commands.Cog):
                 messages=conversation_messages,
                 max_tokens=100
             )
-            reply = response.choices[0].message['content']
+            reply = response.choices[0].message.content  # Fixed to use attribute access
             self.conversation_states[key].append({"role": "assistant", "content": reply})
             await message.channel.send(f"{message.author.mention} {reply}")
         except Exception as e:
