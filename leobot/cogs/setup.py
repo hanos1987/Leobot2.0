@@ -1,280 +1,108 @@
 import discord
 from discord.ext import commands
 import asyncio
-import json
-import os
-import random
-import aiohttp
-from html import unescape
+from ..utility.config_utils import bot_settings, save_bot_settings
 
-class Trivia(commands.Cog):
-    TRIVIA_CHANNEL_ID = None
-    TIMER_DURATION = 25  # Seconds per question
-    LEADERBOARD_FILE = "data/trivia_leaderboard.json"
-    ROUNDS_FILE = "data/trivia_rounds.json"
-    CATEGORY_POOL = [
-        "General Knowledge", "Science", "History", "Geography", "Sports",
-        "Entertainment", "Literature", "Technology", "Art", "Mathematics"
-    ]
-    CATEGORY_MAP = {
-        "General Knowledge": 9,
-        "Entertainment": 11,
-        "Science": 17,
-        "History": 23,
-        "Geography": 22,
-        "Sports": 21,
-        "Literature": 10,
-        "Technology": 18,
-        "Art": 25,
-        "Mathematics": 19
-    }
-    DIFFICULTY_MAP = {
-        "Easy": "easy",
-        "Medium": "medium",
-        "Hard": "hard"
-    }
+BOT_OWNER_ID = 1131932116242939975
 
+class Setup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.is_trivia_active = False
-        self.current_question_index = 0
-        self.current_question_message = None
-        self.timer_task = None
-        self.selected_category = None
-        self.selected_difficulty = None
-        self.question_count = 10
-        self.current_questions = []
-        self.game_scores = {}
-        self.current_guesses = {}
-        self.all_time_leaderboard = self.load_leaderboard()
-        self.rounds = self.load_rounds()
-        self.session_token = None
-        asyncio.create_task(self.fetch_session_token())
-
-    def load_leaderboard(self):
-        try:
-            with open(self.LEADERBOARD_FILE, "r") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-        except json.JSONDecodeError:
-            return {}
-
-    def save_leaderboard(self):
-        os.makedirs("data", exist_ok=True)
-        with open(self.LEADERBOARD_FILE, "w") as f:
-            json.dump(self.all_time_leaderboard, f, indent=4)
-
-    def load_rounds(self):
-        try:
-            with open(self.ROUNDS_FILE, "r") as f:
-                return json.load(f).get("rounds", 0)
-        except FileNotFoundError:
-            return 0
-        except json.JSONDecodeError:
-            return 0
-
-    def save_rounds(self):
-        os.makedirs("data", exist_ok=True)
-        with open(self.ROUNDS_FILE, "w") as f:
-            json.dump({"rounds": self.rounds}, f, indent=4)
-
-    async def fetch_session_token(self):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://opentdb.com/api_token.php?command=request", timeout=5) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json()
-                    if data["response_code"] == 0:
-                        self.session_token = data["token"]
-                        return self.session_token
-                    return None
-        except aiohttp.ClientError:
-            return None
-
-    async def fetch_questions(self, category, difficulty):
-        category_id = self.CATEGORY_MAP.get(category)
-        difficulty_level = self.DIFFICULTY_MAP.get(difficulty)
-        if not category_id or not difficulty_level:
-            return []
-        url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple"
-        if self.session_token:
-            url += f"&token={self.session_token}"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as resp:
-                    if resp.status != 200:
-                        return []
-                    data = await resp.json()
-                    if data["response_code"] != 0:
-                        if data["response_code"] in [3, 4]:
-                            self.session_token = await self.fetch_session_token()
-                            url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple&token={self.session_token}"
-                            async with session.get(url, timeout=5) as resp2:
-                                if resp2.status != 200:
-                                    return []
-                                data = await resp2.json()
-                                if data["response_code"] != 0:
-                                    return []
-                        else:
-                            return []
-                    questions = []
-                    for q in data["results"]:
-                        question_text = unescape(q["question"])
-                        correct_answer = unescape(q["correct_answer"])
-                        incorrect_answers = [unescape(ans) for ans in q["incorrect_answers"]]
-                        options = incorrect_answers + [correct_answer]
-                        random.shuffle(options)
-                        answer_idx = options.index(correct_answer)
-                        questions.append({
-                            "category": category,
-                            "difficulty": difficulty,
-                            "question": question_text,
-                            "options": options,
-                            "answer": answer_idx
-                        })
-                    return questions
-        except aiohttp.ClientError:
-            return []
-
-    async def check_trivia_channel(self, ctx):
-        from ..utility.config_utils import bot_settings
-        trivia_channel = bot_settings.get('channelIds', {}).get('triviaChannel')
-        if trivia_channel and ctx.channel.id != trivia_channel:
-            await ctx.send(f"Trivia commands are only allowed in <#{trivia_channel}>!")
-            return False
-        return True
-
-    async def run_poll(self, ctx, message_content, options):
-        poll_message = await ctx.send(
-            f"{message_content}\n"
-            f"🇦: {options[0]}\n"
-            f"🇧: {options[1]}\n"
-            f"🇨: {options[2]}\n"
-            "Poll closes in 10 seconds!"
-        )
-        for emoji in ['🇦', '🇧', '🇨']:
-            await poll_message.add_reaction(emoji)
-        await asyncio.sleep(10)
-        poll_message = await ctx.channel.fetch_message(poll_message.id)
-        reaction_counts = {emoji: 0 for emoji in ['🇦', '🇧', '🇨']}
-        for reaction in poll_message.reactions:
-            if reaction.emoji in reaction_counts:
-                reaction_counts[reaction.emoji] = reaction.count - 1
-        max_votes = max(reaction_counts.values())
-        if max_votes == 0:
-            await ctx.send(f"No votes received, defaulting to: **{options[0]}**")
-            return options[0]
-        tied_emojis = [emoji for emoji, count in reaction_counts.items() if count == max_votes]
-        winning_emoji = random.choice(tied_emojis)
-        return options[{'🇦': 0, '🇧': 1, '🇨': 2}[winning_emoji]]
 
     @commands.command()
-    async def trivia(self, ctx):
-        from ..utility.permission_utils import is_mod
-        if not await self.check_trivia_channel(ctx) or not is_mod(ctx.author):
+    async def setupleobot(self, ctx):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
             return
-        if self.is_trivia_active:
-            await ctx.send("A trivia game is already in progress!")
-            return
-        categories = random.sample(self.CATEGORY_POOL, 3)
-        self.selected_category = await self.run_poll(
-            ctx, "Choose a category:", categories
-        )
-        await ctx.send(f"Selected category: **{self.selected_category}**")
-        difficulties = ["Easy", "Medium", "Hard"]
-        self.selected_difficulty = await self.run_poll(
-            ctx, "Choose the difficulty:", difficulties
-        )
-        await ctx.send(f"Selected difficulty: **{self.selected_difficulty}**")
-        self.is_trivia_active = True
-        questions = await self.fetch_questions(self.selected_category, self.selected_difficulty)
-        if questions:
-            self.current_questions = questions[:10]
-            self.current_question_index = 0
-            await self.send_question(ctx.channel)
-        else:
-            self.is_trivia_active = False
-            await ctx.send("Unable to fetch questions. Try again later.")
+        current_playercard = bot_settings.get("channelIds", {}).get("playerCardChannel", "None")
+        await ctx.send(f"Enter the channel ID for player card creation (current: {current_playercard}):")
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            playercard_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            playercard_channel = current_playercard if current_playercard != "None" else None
+        current_trivia = bot_settings.get("channelIds", {}).get("triviaChannel", "None")
+        await ctx.send(f"Enter the channel ID for trivia commands (current: {current_trivia}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            trivia_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            trivia_channel = current_trivia if current_trivia != "None" else None
+        current_mod = bot_settings.get("channelIds", {}).get("modChannel", "None")
+        await ctx.send(f"Enter the channel ID for mod-only commands (current: {current_mod}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            mod_channel = int(msg.content)
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            mod_channel = current_mod if current_mod != "None" else None
+        current_admins = bot_settings.get("admins", [BOT_OWNER_ID])
+        await ctx.send(f"Enter admin IDs (comma-separated) (current: {', '.join(map(str, current_admins))}):")
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60)
+            admin_ids_input = msg.content.strip()
+            if admin_ids_input:
+                admin_ids = [int(id.strip()) for id in admin_ids_input.split(',') if id.strip()]
+                if BOT_OWNER_ID not in admin_ids:
+                    admin_ids.append(BOT_OWNER_ID)
+            else:
+                admin_ids = current_admins
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Invalid input or timeout. Using current value.")
+            admin_ids = current_admins
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["playerCardChannel"] = playercard_channel
+        bot_settings["channelIds"]["triviaChannel"] = trivia_channel
+        bot_settings["channelIds"]["modChannel"] = mod_channel
+        bot_settings["admins"] = admin_ids
+        save_bot_settings(bot_settings)
+        await ctx.send("Setup complete!")
 
-    async def send_question(self, channel):
-        if self.current_question_index >= len(self.current_questions):
-            await self.end_game(channel)
+    @commands.command()
+    async def setadmin(self, ctx, admin_ids: str):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
             return
-        question_data = self.current_questions[self.current_question_index]
-        answer_text = "\n".join([f"{chr(65 + i)}: {opt}" for i, opt in enumerate(question_data["options"])])
-        self.current_question_message = await channel.send(
-            f"Question {self.current_question_index + 1}/{len(self.current_questions)}: {question_data['question']}\n\n{answer_text}\n\n"
-            f"React with 🇦, 🇧, 🇨, or 🇩! Time: {self.TIMER_DURATION} seconds."
-        )
-        for emoji in ['🇦', '🇧', '🇨', '🇩']:
-            await self.current_question_message.add_reaction(emoji)
-        self.current_guesses[self.current_question_index] = {}
-        self.timer_task = asyncio.create_task(self.timer(channel, question_data))
+        admin_ids_list = [int(id.strip()) for id in admin_ids.split(',') if id.strip()]
+        if BOT_OWNER_ID not in admin_ids_list:
+            admin_ids_list.append(BOT_OWNER_ID)
+        bot_settings["admins"] = admin_ids_list
+        save_bot_settings(bot_settings)
+        await ctx.send("Admins updated successfully.")
 
-    async def timer(self, channel, question_data):
-        await asyncio.sleep(self.TIMER_DURATION)
-        guesses = self.current_guesses.get(self.current_question_index, {})
-        correct_answer = question_data["options"][question_data["answer"]]
-        correct_letter = chr(65 + question_data["answer"])
-        correct_users = []
-        for user_id, guess in guesses.items():
-            if guess == correct_letter:
-                self.game_scores[user_id] = self.game_scores.get(user_id, 0) + 1
-                user = self.bot.get_user(user_id)
-                if user:
-                    correct_users.append(user.mention)
-        result = f"Time’s up! Correct answer: {correct_answer} (Option {correct_letter})\n"
-        if correct_users:
-            result += f"Correct: {', '.join(correct_users)}"
-        else:
-            result += "No one got it right!"
-        await channel.send(result)
-        self.current_question_index += 1
-        await self.send_question(channel)
-
-    async def end_game(self, channel):
-        self.rounds += 1
-        self.save_rounds()
-        game_leaderboard = sorted(self.game_scores.items(), key=lambda x: x[1], reverse=True)
-        game_text = "Game Leaderboard:\n" + "\n".join(
-            [f"{self.bot.get_user(user_id).mention}: {score}" for user_id, score in game_leaderboard]
-        ) if game_leaderboard else "No scores this game."
-        for user_id, score in self.game_scores.items():
-            self.all_time_leaderboard[str(user_id)] = self.all_time_leaderboard.get(str(user_id), 0) + score
-        self.save_leaderboard()
-        all_time_leaderboard = sorted(self.all_time_leaderboard.items(), key=lambda x: x[1], reverse=True)[:5]
-        all_time_text = "All-Time Leaderboard (Top 5):\n" + "\n".join(
-            [f"{self.bot.get_user(int(user_id)).mention}: {score}" for user_id, score in all_time_leaderboard]
-        ) if all_time_leaderboard else "No scores yet."
-        token_cog = self.bot.get_cog("TokenManager")
-        token_text = ""
-        if token_cog:
-            for user_id, score in self.game_scores.items():
-                if score > 0:
-                    token_cog.add_tokens(user_id, score)
-                    user = self.bot.get_user(user_id)
-                    if user:
-                        token_text += f"Awarded {score} Sleep Token{'s' if score > 1 else ''} to {user.mention}!\n"
-        await channel.send(f"Trivia ended!\n\n{game_text}\n\n{all_time_text}" + (f"\n\n{token_text}" if token_text else ""))
-        self.is_trivia_active = False
-        self.game_scores = {}
-        self.current_guesses = {}
-        self.selected_category = None
-        self.selected_difficulty = None
-        self.current_question_message = None
-        self.current_questions = []
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user == self.bot.user or not self.is_trivia_active or reaction.message != self.current_question_message:
+    @commands.command()
+    async def setplayercardchannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
             return
-        if reaction.emoji not in ['🇦', '🇧', '🇨', '🇩']:
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["playerCardChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Player card channel updated successfully.")
+
+    @commands.command()
+    async def settriviachannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
             return
-        letter = {'🇦': 'A', '🇧': 'B', '🇨': 'C', '🇩': 'D'}[reaction.emoji]
-        self.current_guesses[self.current_question_index][user.id] = letter
-        await reaction.remove(user)
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["triviaChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Trivia channel updated successfully.")
+
+    @commands.command()
+    async def setmodchannel(self, ctx, channel_id: int):
+        if ctx.author.id != BOT_OWNER_ID:
+            await ctx.send("Only the bot owner can run this command.")
+            return
+        bot_settings.setdefault("channelIds", {})
+        bot_settings["channelIds"]["modChannel"] = channel_id
+        save_bot_settings(bot_settings)
+        await ctx.send("Mod-only channel updated successfully.")
 
 async def setup(bot):
-    await bot.add_cog(Trivia(bot))
+    await bot.add_cog(Setup(bot))
