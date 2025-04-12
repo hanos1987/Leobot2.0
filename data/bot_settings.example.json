@@ -1,0 +1,30 @@
+{
+    "admins": [1131932116242939975],
+    "channelIds": {
+        "playerCardChannel": null,
+        "triviaChannel": null,
+        "modChannel": null
+    },
+    "colorRoles": {
+        "Red": "#FF0000",
+        "Green": "#00FF00",
+        "Blue": "#0000FF",
+        "Yellow": "#FFFF00",
+        "Purple": "#800080",
+        "Cyan": "#00FFFF",
+        "Orange": "#FF6600",
+        "Pink": "#FFC0CB",
+        "Brown": "#A52A2A",
+        "Gray": "#808080",
+        "Navy": "#000080",
+        "Teal": "#008080",
+        "Violet": "#EE82EE",
+        "Salmon": "#FA8072",
+        "Gold": "#FFD700",
+        "Silver": "#C0C0C0",
+        "Turquoise": "#40E0D0",
+        "Magenta": "#FF00FF",
+        "The Archive": "#9bdeed",
+        "Lime": "#00FF00"
+    }
+}
