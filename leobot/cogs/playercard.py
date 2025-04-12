@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
-from .utility.config_utils import bot_settings
+from ..utility.config_utils import bot_settings
 import json
 
 def load_json(file):
