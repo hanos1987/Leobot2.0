@@ -139,7 +139,7 @@ class Trivia(commands.Cog):
             return []
 
     async def check_trivia_channel(self, ctx):
-        from utility.config_utils import bot_settings
+        from .utility.config_utils import bot_settings
         trivia_channel = bot_settings.get('channelIds', {}).get('triviaChannel')
         if trivia_channel and ctx.channel.id != trivia_channel:
             await ctx.send(f"Trivia commands are only allowed in <#{trivia_channel}>!")
@@ -172,7 +172,7 @@ class Trivia(commands.Cog):
 
     @commands.command()
     async def trivia(self, ctx):
-        from utility.permission_utils import is_mod
+        from .utility.permission_utils import is_mod
         if not await self.check_trivia_channel(ctx) or not is_mod(ctx.author):
             return
         if self.is_trivia_active:
