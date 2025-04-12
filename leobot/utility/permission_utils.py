@@ -1,4 +1,4 @@
-from utility.config_utils import bot_settings
+from .config_utils import bot_settings
 
 def is_mod(user):
     admins = bot_settings.get("admins", [])
