@@ -1,11 +1,11 @@
 import discord
 from discord.ext import commands
 import asyncio
-import json
 import os
 import random
 import aiohttp
 from html import unescape
+from ..utility.utility_functions import load_json, save_json
 
 class Trivia(commands.Cog):
     TRIVIA_CHANNEL_ID = None
@@ -46,43 +46,16 @@ class Trivia(commands.Cog):
         self.current_questions = []
         self.game_scores = {}
         self.current_guesses = {}
-        self.all_time_leaderboard = self.load_leaderboard()
-        self.rounds = self.load_rounds()
+        self.all_time_leaderboard = load_json(self.LEADERBOARD_FILE)
+        rounds_data = load_json(self.ROUNDS_FILE)
+        self.rounds = rounds_data.get("rounds", 0) if rounds_data else 0
         self.session_token = None
         asyncio.create_task(self.fetch_session_token())
-
-    def load_leaderboard(self):
-        try:
-            with open(self.LEADERBOARD_FILE, "r") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-        except json.JSONDecodeError:
-            return {}
-
-    def save_leaderboard(self):
-        os.makedirs("data", exist_ok=True)
-        with open(self.LEADERBOARD_FILE, "w") as f:
-            json.dump(self.all_time_leaderboard, f, indent=4)
-
-    def load_rounds(self):
-        try:
-            with open(self.ROUNDS_FILE, "r") as f:
-                return json.load(f).get("rounds", 0)
-        except FileNotFoundError:
-            return 0
-        except json.JSONDecodeError:
-            return 0
-
-    def save_rounds(self):
-        os.makedirs("data", exist_ok=True)
-        with open(self.ROUNDS_FILE, "w") as f:
-            json.dump({"rounds": self.rounds}, f, indent=4)
 
     async def fetch_session_token(self):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://opentdb.com/api_token.php?command=request", timeout=5) as resp:
+                async with session.get("[invalid url, do not cite]", timeout=5) as resp:
                     if resp.status != 200:
                         return None
                     data = await resp.json()
@@ -98,7 +71,7 @@ class Trivia(commands.Cog):
         difficulty_level = self.DIFFICULTY_MAP.get(difficulty)
         if not category_id or not difficulty_level:
             return []
-        url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple"
+        url = f"[invalid url, do not cite]"
         if self.session_token:
             url += f"&token={self.session_token}"
         try:
@@ -110,7 +83,7 @@ class Trivia(commands.Cog):
                     if data["response_code"] != 0:
                         if data["response_code"] in [3, 4]:
                             self.session_token = await self.fetch_session_token()
-                            url = f"https://opentdb.com/api.php?amount=10&category={category_id}&difficulty={difficulty_level}&type=multiple&token={self.session_token}"
+                            url = f"[invalid url, do not cite]"
                             async with session.get(url, timeout=5) as resp2:
                                 if resp2.status != 200:
                                     return []
@@ -139,7 +112,7 @@ class Trivia(commands.Cog):
             return []
 
     async def check_trivia_channel(self, ctx):
-        from .utility.config_utils import bot_settings
+        from ..utility.config_utils import bot_settings
         trivia_channel = bot_settings.get('channelIds', {}).get('triviaChannel')
         if trivia_channel and ctx.channel.id != trivia_channel:
             await ctx.send(f"Trivia commands are only allowed in <#{trivia_channel}>!")
@@ -172,7 +145,7 @@ class Trivia(commands.Cog):
 
     @commands.command()
     async def trivia(self, ctx):
-        from .utility.permission_utils import is_mod
+        from ..utility.permission_utils import is_mod
         if not await self.check_trivia_channel(ctx) or not is_mod(ctx.author):
             return
         if self.is_trivia_active:
@@ -235,15 +208,15 @@ class Trivia(commands.Cog):
         await self.send_question(channel)
 
     async def end_game(self, channel):
+        for user_id, score in self.game_scores.items():
+            self.all_time_leaderboard[str(user_id)] = self.all_time_leaderboard.get(str(user_id), 0) + score
+        save_json(self.LEADERBOARD_FILE, self.all_time_leaderboard)
         self.rounds += 1
-        self.save_rounds()
+        save_json(self.ROUNDS_FILE, {"rounds": self.rounds})
         game_leaderboard = sorted(self.game_scores.items(), key=lambda x: x[1], reverse=True)
         game_text = "Game Leaderboard:\n" + "\n".join(
             [f"{self.bot.get_user(user_id).mention}: {score}" for user_id, score in game_leaderboard]
         ) if game_leaderboard else "No scores this game."
-        for user_id, score in self.game_scores.items():
-            self.all_time_leaderboard[str(user_id)] = self.all_time_leaderboard.get(str(user_id), 0) + score
-        self.save_leaderboard()
         all_time_leaderboard = sorted(self.all_time_leaderboard.items(), key=lambda x: x[1], reverse=True)[:5]
         all_time_text = "All-Time Leaderboard (Top 5):\n" + "\n".join(
             [f"{self.bot.get_user(int(user_id)).mention}: {score}" for user_id, score in all_time_leaderboard]
