@@ -1,8 +1,8 @@
 import discord
 from discord.ext import commands
 import json
-from utility.config_utils import bot_settings
-from utility.permission_utils import is_mod
+from .utility.config_utils import bot_settings
+from .utility.permission_utils import is_mod
 
 def load_json(file):
     try:
