@@ -81,7 +81,7 @@ class Conversation(commands.Cog):
                 ],
                 max_tokens=200
             )
-            search_result = search_response.choices[0].message['content']
+            search_result = search_response.choices[0].message.content  # Changed to attribute access
             print(f"Grok 3 search result: {search_result}")
 
             # Step 2: Use OpenAI to generate a conversational response with the search result as context
