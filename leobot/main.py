@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 import os
 from dotenv import load_dotenv
-from utility.config_utils import bot_settings, save_bot_settings
+from .utility.config_utils import bot_settings, save_bot_settings
 
 # Load environment variables
 load_dotenv()
