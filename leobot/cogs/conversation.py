@@ -72,16 +72,17 @@ class Conversation(commands.Cog):
         self.conversation_states[key].append({"role": "user", "content": message.content})
         self.last_message_time[key] = datetime.utcnow()
         try:
-            # Step 1: Use Grok 3 to fetch up-to-date information (DeepSearch should be automatic)
+            # Step 1: Use Grok 3 for chat completion with web search capability
             search_response = xai_client.chat.completions.create(
-                model="grok-3-latest",
+                model="grok-3 latest",
                 messages=[
-                    {"role": "system", "content": "You are a research assistant with access to real-time web data. Provide factual, up-to-date information in response to the user's query."},
+                    {"role": "system", "content": "You are a test assistant."},
                     {"role": "user", "content": message.content}
                 ],
-                max_tokens=200
+                temperature=0,  # Match screen's deterministic setting
+                stream=False  # Implicit in non-streaming, but ensure
             )
-            search_result = search_response.choices[0].message.content  # Changed to attribute access
+            search_result = search_response.choices[0].message.content
             print(f"Grok 3 search result: {search_result}")
 
             # Step 2: Use OpenAI to generate a conversational response with the search result as context
