@@ -1,6 +1,6 @@
 from discord.ext import commands
-from utility.config_utils import bot_settings
-from utility.permission_utils import is_mod
+from .utility.config_utils import bot_settings
+from .utility.permission_utils import is_mod
 
 class ModCommands(commands.Cog):
     def __init__(self, bot):
